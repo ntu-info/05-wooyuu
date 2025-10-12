@@ -45,46 +45,80 @@ def create_app():
 
 # ...existing code...
 
-    @app.get("/dissociate/terms/<term_a>/<term_b>/both", endpoint="dissociate_terms_both")
-    def dissociate_terms_both(term_a, term_b):
-        """回傳雙向分離結果"""
+    @app.get("/dissociate/terms/<term_a>/<term_b>", endpoint="dissociate_terms")
+    def dissociate_terms(term_a, term_b):
+        """
+        回傳提到 term_a 但沒提到 term_b 的研究
+        支援模糊比對（LIKE）
+        """
         eng = get_engine()
         
-        with eng.begin() as conn:
-            conn.execute(text("SET search_path TO ns, public;"))
-            
-            # A \ B
-            query_ab = text("""
-                SELECT DISTINCT study_id FROM ns.annotations_terms WHERE term = :term_a
-                EXCEPT
-                SELECT DISTINCT study_id FROM ns.annotations_terms WHERE term = :term_b
-                ORDER BY study_id
-            """)
-            studies_ab = [row[0] for row in conn.execute(query_ab, {"term_a": term_a, "term_b": term_b}).fetchall()]
-            
-            # B \ A
-            query_ba = text("""
-                SELECT DISTINCT study_id FROM ns.annotations_terms WHERE term = :term_b
-                EXCEPT
-                SELECT DISTINCT study_id FROM ns.annotations_terms WHERE term = :term_a
-                ORDER BY study_id
-            """)
-            studies_ba = [row[0] for row in conn.execute(query_ba, {"term_a": term_a, "term_b": term_b}).fetchall()]
-            
+        try:
+            with eng.begin() as conn:
+                conn.execute(text("SET search_path TO ns, public;"))
+                
+                # 方法 1：精確比對
+                query_exact = text("""
+                    SELECT DISTINCT study_id
+                    FROM ns.annotations_terms
+                    WHERE term = :term_a
+                    
+                    EXCEPT
+                    
+                    SELECT DISTINCT study_id
+                    FROM ns.annotations_terms
+                    WHERE term = :term_b
+                    
+                    ORDER BY study_id
+                """)
+                
+                result_exact = conn.execute(query_exact, {
+                    "term_a": term_a,
+                    "term_b": term_b
+                }).fetchall()
+                
+                # 如果精確比對沒結果，試試模糊比對
+                if not result_exact:
+                    query_like = text("""
+                        SELECT DISTINCT study_id
+                        FROM ns.annotations_terms
+                        WHERE term LIKE :term_a
+                        
+                        EXCEPT
+                        
+                        SELECT DISTINCT study_id
+                        FROM ns.annotations_terms
+                        WHERE term LIKE :term_b
+                        
+                        ORDER BY study_id
+                    """)
+                    
+                    result_like = conn.execute(query_like, {
+                        "term_a": f"%{term_a}%",
+                        "term_b": f"%{term_b}%"
+                    }).fetchall()
+                    
+                    studies = [row[0] for row in result_like]
+                    match_type = "fuzzy (LIKE)"
+                else:
+                    studies = [row[0] for row in result_exact]
+                    match_type = "exact"
+                
+                return jsonify({
+                    "term_a": term_a,
+                    "term_b": term_b,
+                    "match_type": match_type,
+                    "dissociation": "A \\ B (studies with A but not B)",
+                    "count": len(studies),
+                    "studies": studies[:50]  # 限制回傳數量避免太大
+                }), 200
+                
+        except Exception as e:
             return jsonify({
+                "error": str(e),
                 "term_a": term_a,
-                "term_b": term_b,
-                "a_not_b": {
-                    "dissociation": f"{term_a} \\ {term_b}",
-                    "count": len(studies_ab),
-                    "studies": studies_ab
-                },
-                "b_not_a": {
-                    "dissociation": f"{term_b} \\ {term_a}",
-                    "count": len(studies_ba),
-                    "studies": studies_ba
-                }
-            }), 200
+                "term_b": term_b
+            }), 500
 
     @app.get("/dissociate/locations/<coords_a>/<coords_b>", endpoint="dissociate_locations")
     def dissociate_locations(coords_a, coords_b):
