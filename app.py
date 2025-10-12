@@ -47,26 +47,52 @@ def create_app():
 
     @app.get("/dissociate/terms/<term_a>/<term_b>", endpoint="dissociate_terms")
     def dissociate_terms(term_a, term_b):
+        """
+        回傳提到 term_a 但沒提到 term_b 的研究
+        """
         eng = get_engine()
-        with eng.begin() as conn:
-            # 找出有 term_a 但沒有 term_b 的 study_id
-            sql = """
-                SELECT DISTINCT study_id
-                FROM ns.annotations_terms
-                WHERE term = :term_a
-                AND study_id NOT IN (
-                    SELECT study_id FROM ns.annotations_terms WHERE term = :term_b
-                )
-            """
-            study_ids = [r[0] for r in conn.execute(text(sql), {"term_a": term_a, "term_b": term_b}).all()]
-            # 取出 metadata
-            if not study_ids:
-                return jsonify([])
-            rows = conn.execute(
-                text("SELECT * FROM ns.metadata WHERE study_id = ANY(:ids)"),
-                {"ids": study_ids}
-            ).mappings().all()
-            return jsonify([dict(r) for r in rows])
+        
+        try:
+            with eng.begin() as conn:
+                conn.execute(text("SET search_path TO ns, public;"))
+                
+                # 使用 EXCEPT（集合差）
+                query = text("""
+                    SELECT DISTINCT study_id
+                    FROM ns.annotations_terms
+                    WHERE term = :term_a
+                    
+                    EXCEPT
+                    
+                    SELECT DISTINCT study_id
+                    FROM ns.annotations_terms
+                    WHERE term = :term_b
+                    
+                    ORDER BY study_id
+                """)
+                
+                result = conn.execute(query, {
+                    "term_a": term_a,
+                    "term_b": term_b
+                }).fetchall()
+                
+                # 轉換成 study_id 列表
+                studies = [row[0] for row in result]
+                
+                return jsonify({
+                    "term_a": term_a,
+                    "term_b": term_b,
+                    "dissociation": "A \\ B (studies with A but not B)",
+                    "count": len(studies),
+                    "studies": studies
+                }), 200
+                
+        except Exception as e:
+            return jsonify({
+                "error": str(e),
+                "term_a": term_a,
+                "term_b": term_b
+            }), 500
 
     @app.get("/dissociate/locations/<coords1>/<coords2>", endpoint="dissociate_locations")
     def dissociate_locations(coords1, coords2):
