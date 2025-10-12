@@ -44,63 +44,6 @@ def create_app():
         return jsonify([x, y, z])
 
 # ...existing code...
-    @app.get("/debug/terms", endpoint="debug_terms")
-    def debug_terms():
-        """查看資料庫中所有不同的 term（限制 100 個）"""
-        eng = get_engine()
-        
-        try:
-            with eng.begin() as conn:
-                conn.execute(text("SET search_path TO ns, public;"))
-                
-                # 取得所有不同的 term
-                result = conn.execute(text("""
-                    SELECT DISTINCT term 
-                    FROM ns.annotations_terms 
-                    ORDER BY term 
-                    LIMIT 100
-                """)).fetchall()
-                
-                terms = [row[0] for row in result]
-                
-                return jsonify({
-                    "count": len(terms),
-                    "terms": terms
-                }), 200
-                
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    
-    @app.get("/debug/search_term/<keyword>", endpoint="debug_search_term")
-    def debug_search_term(keyword):
-        """搜尋包含某關鍵字的 term"""
-        eng = get_engine()
-        
-        try:
-            with eng.begin() as conn:
-                conn.execute(text("SET search_path TO ns, public;"))
-                
-                # 使用 LIKE 模糊搜尋
-                result = conn.execute(text("""
-                    SELECT DISTINCT term, COUNT(*) as count
-                    FROM ns.annotations_terms
-                    WHERE term LIKE :keyword
-                    GROUP BY term
-                    ORDER BY count DESC
-                    LIMIT 20
-                """), {"keyword": f"%{keyword}%"}).fetchall()
-                
-                terms = [{"term": row[0], "count": row[1]} for row in result]
-                
-                return jsonify({
-                    "keyword": keyword,
-                    "matches": len(terms),
-                    "terms": terms
-                }), 200
-                
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
     @app.get("/dissociate/terms/<term_a>/<term_b>", endpoint="dissociate_terms")
     def dissociate_terms(term_a, term_b):
         """
