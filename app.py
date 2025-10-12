@@ -94,32 +94,70 @@ def create_app():
                 "term_b": term_b
             }), 500
 
-    @app.get("/dissociate/locations/<coords1>/<coords2>", endpoint="dissociate_locations")
-    def dissociate_locations(coords1, coords2):
+    @app.get("/dissociate/locations/<coords_a>/<coords_b>", endpoint="dissociate_locations")
+    def dissociate_locations(coords_a, coords_b):
+        """
+        回傳提到座標 A 但沒提到座標 B 的研究
+        座標格式：x_y_z（例如：0_-52_26）
+        """
+        try:
+            # 解析座標
+            x1, y1, z1 = map(float, coords_a.split("_"))
+            x2, y2, z2 = map(float, coords_b.split("_"))
+        except ValueError:
+            return jsonify({
+                "error": "Invalid coordinate format. Use x_y_z (e.g., 0_-52_26)"
+            }), 400
+        
         eng = get_engine()
-        x1, y1, z1 = map(int, coords1.split("_"))
-        x2, y2, z2 = map(int, coords2.split("_"))
-        with eng.begin() as conn:
-            # 找出有 [x1, y1, z1] 但沒有 [x2, y2, z2] 的 study_id
-            sql = """
-                SELECT DISTINCT study_id
-                FROM ns.coordinates
-                WHERE ST_X(geom) = :x1 AND ST_Y(geom) = :y1 AND ST_Z(geom) = :z1
-                AND study_id NOT IN (
-                    SELECT study_id FROM ns.coordinates
-                    WHERE ST_X(geom) = :x2 AND ST_Y(geom) = :y2 AND ST_Z(geom) = :z2
-                )
-            """
-            study_ids = [r[0] for r in conn.execute(
-                text(sql), {"x1": x1, "y1": y1, "z1": z1, "x2": x2, "y2": y2, "z2": z2}
-            ).all()]
-            if not study_ids:
-                return jsonify([])
-            rows = conn.execute(
-                text("SELECT * FROM ns.metadata WHERE study_id = ANY(:ids)"),
-                {"ids": study_ids}
-            ).mappings().all()
-            return jsonify([dict(r) for r in rows])
+        
+        try:
+            with eng.begin() as conn:
+                conn.execute(text("SET search_path TO ns, public;"))
+                
+                # 使用 PostGIS 的空間查詢
+                query = text("""
+                    SELECT DISTINCT study_id
+                    FROM ns.coordinates
+                    WHERE ST_3DDistance(
+                        geom,
+                        ST_SetSRID(ST_MakePoint(:x1, :y1, :z1), 4326)
+                    ) < 5  -- 距離 A < 5mm
+                    
+                    EXCEPT
+                    
+                    SELECT DISTINCT study_id
+                    FROM ns.coordinates
+                    WHERE ST_3DDistance(
+                        geom,
+                        ST_SetSRID(ST_MakePoint(:x2, :y2, :z2), 4326)
+                    ) < 5  -- 排除距離 B < 5mm 的
+                    
+                    ORDER BY study_id
+                """)
+                
+                result = conn.execute(query, {
+                    "x1": x1, "y1": y1, "z1": z1,
+                    "x2": x2, "y2": y2, "z2": z2
+                }).fetchall()
+                
+                studies = [row[0] for row in result]
+                
+                return jsonify({
+                    "location_a": {"x": x1, "y": y1, "z": z1},
+                    "location_b": {"x": x2, "y": y2, "z": z2},
+                    "dissociation": "A \\ B (studies near A but not near B)",
+                    "distance_threshold_mm": 5,
+                    "count": len(studies),
+                    "studies": studies
+                }), 200
+                
+        except Exception as e:
+            return jsonify({
+                "error": str(e),
+                "location_a": coords_a,
+                "location_b": coords_b
+            }), 500
 
 # ...existing code...
 
