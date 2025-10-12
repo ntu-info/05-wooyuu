@@ -34,164 +34,70 @@ def create_app():
     def show_img():
         return send_file("amygdala.gif", mimetype="image/gif")
     
-    """
     @app.get("/terms/<term>/studies", endpoint="terms_studies")
     def get_studies_by_term(term):
         return term
-    """
-        
-    @app.get("/dissociate/terms/<term_a>/<term_b>", endpoint="dissociate_terms")
-    def dissociate_terms(term_a, term_b):
-        """
-        回傳提到 term_a 但沒提到 term_b 的研究
-        """
-        eng = get_engine()
-        
-        try:
-            with eng.begin() as conn:
-                conn.execute(text("SET search_path TO ns, public;"))
-                
-                # 方法 1：使用 EXCEPT（集合差）
-                query = text("""
-                    SELECT DISTINCT study_id
-                    FROM ns.annotations_terms
-                    WHERE term = :term_a
-                    
-                    EXCEPT
-                    
-                    SELECT DISTINCT study_id
-                    FROM ns.annotations_terms
-                    WHERE term = :term_b
-                    
-                    ORDER BY study_id
-                """)
-                
-                result = conn.execute(query, {
-                    "term_a": term_a,
-                    "term_b": term_b
-                }).fetchall()
-                
-                # 轉換成 study_id 列表
-                studies = [row[0] for row in result]
-                
-                return jsonify({
-                    "term_a": term_a,
-                    "term_b": term_b,
-                    "dissociation": "A \\ B (studies with A but not B)",
-                    "count": len(studies),
-                    "studies": studies
-                }), 200
-                
-        except Exception as e:
-            return jsonify({
-                "error": str(e),
-                "term_a": term_a,
-                "term_b": term_b
-            }), 500
-        
-    """
+
     @app.get("/locations/<coords>/studies", endpoint="locations_studies")
     def get_studies_by_coordinates(coords):
         x, y, z = map(int, coords.split("_"))
         return jsonify([x, y, z])
-    """
 
-    @app.get("/debug/terms", endpoint="debug_terms")
-    def debug_terms():
-        """列出資料庫中所有的 terms（前 100 個）"""
+# ...existing code...
+
+    @app.get("/dissociate/terms/<term_a>/<term_b>", endpoint="dissociate_terms")
+    def dissociate_terms(term_a, term_b):
         eng = get_engine()
-        
-        try:
-            with eng.begin() as conn:
-                conn.execute(text("SET search_path TO ns, public;"))
-                
-                # 取得所有不重複的 terms
-                result = conn.execute(text("""
-                    SELECT DISTINCT term, COUNT(*) as study_count
-                    FROM ns.annotations_terms
-                    GROUP BY term
-                    ORDER BY study_count DESC
-                    LIMIT 100
-                """)).fetchall()
-                
-                terms = [{"term": row[0], "study_count": row[1]} for row in result]
-                
-                return jsonify({
-                    "total_terms_shown": len(terms),
-                    "terms": terms
-                }), 200
-                
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-        
-    @app.get("/dissociate/locations/<coords_a>/<coords_b>", endpoint="dissociate_locations")
-    def dissociate_locations(coords_a, coords_b):
-        """
-        回傳提到座標 A 但沒提到座標 B 的研究
-        座標格式：x_y_z（例如：0_-52_26）
-        """
-        try:
-            # 解析座標
-            x1, y1, z1 = map(float, coords_a.split("_"))
-            x2, y2, z2 = map(float, coords_b.split("_"))
-        except ValueError:
-            return jsonify({
-                "error": "Invalid coordinate format. Use x_y_z (e.g., 0_-52_26)"
-            }), 400
-        
+        with eng.begin() as conn:
+            # 找出有 term_a 但沒有 term_b 的 study_id
+            sql = """
+                SELECT DISTINCT study_id
+                FROM ns.annotations_terms
+                WHERE term = :term_a
+                AND study_id NOT IN (
+                    SELECT study_id FROM ns.annotations_terms WHERE term = :term_b
+                )
+            """
+            study_ids = [r[0] for r in conn.execute(text(sql), {"term_a": term_a, "term_b": term_b}).all()]
+            # 取出 metadata
+            if not study_ids:
+                return jsonify([])
+            rows = conn.execute(
+                text("SELECT * FROM ns.metadata WHERE study_id = ANY(:ids)"),
+                {"ids": study_ids}
+            ).mappings().all()
+            return jsonify([dict(r) for r in rows])
+
+    @app.get("/dissociate/locations/<coords1>/<coords2>", endpoint="dissociate_locations")
+    def dissociate_locations(coords1, coords2):
         eng = get_engine()
-        
-        try:
-            with eng.begin() as conn:
-                conn.execute(text("SET search_path TO ns, public;"))
-                
-                # 使用 PostGIS 的空間查詢
-                # 找出距離座標 A 很近（< 5mm）但距離座標 B 較遠（>= 5mm）的研究
-                query = text("""
-                    SELECT DISTINCT study_id
-                    FROM ns.coordinates
-                    WHERE ST_3DDistance(
-                        geom,
-                        ST_SetSRID(ST_MakePoint(:x1, :y1, :z1), 4326)
-                    ) < 5  -- 距離 A 小於 5mm
-                    
-                    EXCEPT
-                    
-                    SELECT DISTINCT study_id
-                    FROM ns.coordinates
-                    WHERE ST_3DDistance(
-                        geom,
-                        ST_SetSRID(ST_MakePoint(:x2, :y2, :z2), 4326)
-                    ) < 5  -- 排除距離 B 小於 5mm 的
-                    
-                    ORDER BY study_id
-                """)
-                
-                result = conn.execute(query, {
-                    "x1": x1, "y1": y1, "z1": z1,
-                    "x2": x2, "y2": y2, "z2": z2
-                }).fetchall()
-                
-                studies = [row[0] for row in result]
-                
-                return jsonify({
-                    "location_a": {"x": x1, "y": y1, "z": z1},
-                    "location_b": {"x": x2, "y": y2, "z": z2},
-                    "dissociation": "A \\ B (studies near A but not near B)",
-                    "distance_threshold_mm": 5,
-                    "count": len(studies),
-                    "studies": studies
-                }), 200
-                
-        except Exception as e:
-            return jsonify({
-                "error": str(e),
-                "location_a": coords_a,
-                "location_b": coords_b
-            }), 500
-    
+        x1, y1, z1 = map(int, coords1.split("_"))
+        x2, y2, z2 = map(int, coords2.split("_"))
+        with eng.begin() as conn:
+            # 找出有 [x1, y1, z1] 但沒有 [x2, y2, z2] 的 study_id
+            sql = """
+                SELECT DISTINCT study_id
+                FROM ns.coordinates
+                WHERE ST_X(geom) = :x1 AND ST_Y(geom) = :y1 AND ST_Z(geom) = :z1
+                AND study_id NOT IN (
+                    SELECT study_id FROM ns.coordinates
+                    WHERE ST_X(geom) = :x2 AND ST_Y(geom) = :y2 AND ST_Z(geom) = :z2
+                )
+            """
+            study_ids = [r[0] for r in conn.execute(
+                text(sql), {"x1": x1, "y1": y1, "z1": z1, "x2": x2, "y2": y2, "z2": z2}
+            ).all()]
+            if not study_ids:
+                return jsonify([])
+            rows = conn.execute(
+                text("SELECT * FROM ns.metadata WHERE study_id = ANY(:ids)"),
+                {"ids": study_ids}
+            ).mappings().all()
+            return jsonify([dict(r) for r in rows])
+
+# ...existing code...
+
     @app.get("/test_db", endpoint="test_db")
-    
     def test_db():
         eng = get_engine()
         payload = {"ok": False, "dialect": eng.dialect.name}
