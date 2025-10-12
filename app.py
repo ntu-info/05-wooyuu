@@ -28,7 +28,7 @@ def create_app():
 
     @app.get("/", endpoint="health")
     def health():
-        return "<p>Server working!</p>"
+        return "<p>Server working!!!:D</p>"
 
     @app.get("/img", endpoint="show_img")
     def show_img():
