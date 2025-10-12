@@ -96,6 +96,34 @@ def create_app():
         return jsonify([x, y, z])
     """
 
+    @app.get("/debug/terms", endpoint="debug_terms")
+    def debug_terms():
+        """列出資料庫中所有的 terms（前 100 個）"""
+        eng = get_engine()
+        
+        try:
+            with eng.begin() as conn:
+                conn.execute(text("SET search_path TO ns, public;"))
+                
+                # 取得所有不重複的 terms
+                result = conn.execute(text("""
+                    SELECT DISTINCT term, COUNT(*) as study_count
+                    FROM ns.annotations_terms
+                    GROUP BY term
+                    ORDER BY study_count DESC
+                    LIMIT 100
+                """)).fetchall()
+                
+                terms = [{"term": row[0], "study_count": row[1]} for row in result]
+                
+                return jsonify({
+                    "total_terms_shown": len(terms),
+                    "terms": terms
+                }), 200
+                
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        
     @app.get("/dissociate/locations/<coords_a>/<coords_b>", endpoint="dissociate_locations")
     def dissociate_locations(coords_a, coords_b):
         """
